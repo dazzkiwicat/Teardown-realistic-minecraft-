@@ -206,7 +206,10 @@ _tex_cache = {}
 
 
 def _rng(name):
-    return np.random.RandomState(abs(hash(name)) % (2 ** 31))
+    # crc32, not hash(): Python randomises hash() per process, which would
+    # make every build produce different textures and a different git diff.
+    import zlib
+    return np.random.RandomState(zlib.crc32(name.encode()) % (2 ** 31))
 
 
 def _speckle(name, material, colours, weights=None):

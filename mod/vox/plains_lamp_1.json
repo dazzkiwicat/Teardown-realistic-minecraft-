@@ -5,21 +5,34 @@
   4,
   3
  ],
- "size_voxels_xyz_vox": [
-  30,
-  30,
-  40
- ],
  "blocks_placed": 8,
- "voxels": 1592,
- "bytes": 7704,
+ "voxels": 5040,
+ "bytes": 21504,
+ "chunks": [
+  {
+   "file": "plains_lamp_1.vox",
+   "bx0": 0,
+   "bz0": 0,
+   "sx": 3,
+   "sz": 3,
+   "voxels": 5040
+  }
+ ],
+ "doors": [],
+ "ground_cells": [],
  "materials": {
   "57": "wood",
   "58": "wood",
   "59": "wood",
+  "60": "wood",
+  "61": "wood",
+  "62": "wood",
+  "63": "wood",
+  "64": "wood",
   "225": "unphysical"
  },
  "emissive_indices": [
   225
- ]
+ ],
+ "door_model_written": false
 }

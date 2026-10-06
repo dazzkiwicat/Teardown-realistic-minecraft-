@@ -62,8 +62,12 @@ def render(grid, palette, scale=4.0, background=(30, 34, 40)):
 
     cos30, sin30 = 0.8660254, 0.5
 
+    # Camera above the (+x, +y) corner looking down towards the origin, so
+    # the visible faces are top, +x and +y (the three masks above) and a
+    # larger x + y + z is nearer (drawn later). Screen right is (y - x) so
+    # the picture is not mirrored: vox axes are right-handed, z up.
     def proj(x, y, z):
-        return ((x - y) * cos30 * scale, -((x + y) * sin30 + z) * scale)
+        return ((y - x) * cos30 * scale, ((x + y) * sin30 - z) * scale)
 
     # image bounds
     corners = [proj(*c) for c in [(0, 0, 0), (sx, 0, 0), (0, sy, 0), (sx, sy, 0),

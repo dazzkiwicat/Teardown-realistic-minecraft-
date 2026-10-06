@@ -29,7 +29,7 @@ def _dict(pairs: dict) -> bytes:
 
 
 def write(path: str, size, voxels, palette: list, emissive: dict | None = None,
-          name: str = "model"):
+          name: str = "model", pivot="bottom-center"):
     """size: (sx, sy, sz).  voxels: {(x,y,z): index} or a numpy uint8 array of
     shape size (0 = empty).  palette: list of up to 255 (r,g,b) or (r,g,b,a);
     palette[i] is palette index i+1.
@@ -38,11 +38,24 @@ def write(path: str, size, voxels, palette: list, emissive: dict | None = None,
     The file gets a one-model scene graph whose translation puts the model's
     BOTTOM CENTRE at the file origin. Teardown places a vox file's origin at
     the <vox pos=...> you give it, so pos is "where the feet / foundation
-    centre goes", the same for every model regardless of its size."""
+    centre goes", the same for every model regardless of its size.
+
+    pivot: "bottom-center" (default, translation (0, 0, sz//2)) or an
+    explicit (tx, ty, tz) translation in voxels written into the nTRN _t.
+    MagicaVoxel puts the model's centre at _t, so the model spans
+    [t - size/2, t + size/2) on each axis and the file origin is the pivot.
+    Example: a door of size (16, 3, 32) with pivot (8, 0, 16) spans x 0..16,
+    y -1.5..1.5, z 0..32, i.e. the origin is on the hinge edge at the bottom."""
     sx, sy, sz = size
     for axis, n in zip("xyz", size):
         if not 1 <= n <= MAX_SIZE:
             raise ValueError(f"{path}: size {axis}={n} outside 1..{MAX_SIZE}")
+    if pivot == "bottom-center":
+        tx, ty, tz = 0, 0, sz // 2
+    elif isinstance(pivot, str):
+        raise ValueError(f"{path}: unknown pivot {pivot!r}")
+    else:
+        tx, ty, tz = (int(v) for v in pivot)
     if len(palette) > 255:
         raise ValueError(f"{path}: palette has {len(palette)} colours, max 255")
 
@@ -78,12 +91,13 @@ def write(path: str, size, voxels, palette: list, emissive: dict | None = None,
     body = _chunk(b"SIZE", struct.pack("<iii", sx, sy, sz))
     body += _chunk(b"XYZI", xyzi)
     # Scene graph: root transform -> group -> transform -> shape(model 0).
-    # MagicaVoxel puts a model's centre at its transform's _t, so _t = (0, 0,
-    # sz//2) leaves the horizontal centre at the origin and the base at z=0.
+    # MagicaVoxel puts a model's centre at its transform's _t, so the default
+    # _t = (0, 0, sz//2) leaves the horizontal centre at the origin and the
+    # base at z=0. An explicit pivot replaces it (see docstring).
     body += _chunk(b"nTRN", struct.pack("<i", 0) + _dict({}) + struct.pack("<iiii", 1, -1, 0, 1) + _dict({}))
     body += _chunk(b"nGRP", struct.pack("<i", 1) + _dict({}) + struct.pack("<ii", 1, 2))
     body += _chunk(b"nTRN", struct.pack("<i", 2) + _dict({"_name": name})
-                   + struct.pack("<iiii", 3, -1, 0, 1) + _dict({"_t": f"0 0 {sz // 2}"}))
+                   + struct.pack("<iiii", 3, -1, 0, 1) + _dict({"_t": f"{tx} {ty} {tz}"}))
     body += _chunk(b"nSHP", struct.pack("<i", 3) + _dict({}) + struct.pack("<i", 1)
                    + struct.pack("<i", 0) + _dict({}))
     body += _chunk(b"RGBA", rgba)
@@ -101,14 +115,16 @@ def write(path: str, size, voxels, palette: list, emissive: dict | None = None,
 
 def read(path: str):
     """Independent reader. Returns dict with size, voxel count, palette index
-    histogram and list of chunk ids. Raises on structural errors."""
+    histogram, list of chunk ids and the model's _t translation (the pivot).
+    Raises on structural errors."""
     with open(path, "rb") as fh:
         data = fh.read()
     if data[:4] != b"VOX ":
         raise ValueError("not a vox file")
     version = struct.unpack_from("<i", data, 4)[0]
     pos = 8
-    out = {"version": version, "chunks": [], "size": None, "count": 0, "hist": {}}
+    out = {"version": version, "chunks": [], "size": None, "count": 0, "hist": {},
+           "translation": None}
 
     def walk(start, end):
         nonlocal pos
@@ -125,12 +141,45 @@ def read(path: str):
                 out["count"] += n
                 if clen != 4 + 4 * n:
                     raise ValueError(f"XYZI claims {n} voxels but chunk is {clen} bytes")
-                for i in range(n):
-                    x, y, z, idx = struct.unpack_from("<4B", data, cstart + 4 + 4 * i)
-                    sx, sy, sz = out["size"]
-                    if x >= sx or y >= sy or z >= sz:
-                        raise ValueError(f"voxel {(x, y, z)} outside SIZE {out['size']}")
-                    out["hist"][idx] = out["hist"].get(idx, 0) + 1
+                # numpy for speed (ground tiles hold 200k voxels each); the
+                # checks are the same as a per-voxel loop.
+                import numpy as np
+                arr = np.frombuffer(data, dtype=np.uint8, count=4 * n,
+                                    offset=cstart + 4).reshape(n, 4)
+                sx, sy, sz = out["size"]
+                bad = (arr[:, 0] >= sx) | (arr[:, 1] >= sy) | (arr[:, 2] >= sz)
+                if bad.any():
+                    x, y, z = (int(v) for v in arr[np.argmax(bad), :3])
+                    raise ValueError(f"voxel {(x, y, z)} outside SIZE {out['size']}")
+                if (arr[:, 3] == 0).any():
+                    raise ValueError("voxel with palette index 0")
+                flat = arr[:, 0].astype(np.int64) * sy * sz + arr[:, 1].astype(np.int64) * sz + arr[:, 2]
+                if len(np.unique(flat)) != n:
+                    raise ValueError("duplicate voxel positions")
+                ids, cnt = np.unique(arr[:, 3], return_counts=True)
+                for i, c in zip(ids.tolist(), cnt.tolist()):
+                    out["hist"][i] = out["hist"].get(i, 0) + c
+            elif cid == b"nTRN":
+                # node id, attribute dict, child, reserved, layer, frame count,
+                # then one frame dict per frame; keep any _t translation.
+                q = cstart + 4
+                def rdict(q):
+                    d = {}
+                    k = struct.unpack_from("<i", data, q)[0]; q += 4
+                    for _ in range(k):
+                        pair = []
+                        for _ in range(2):
+                            ln = struct.unpack_from("<i", data, q)[0]; q += 4
+                            pair.append(data[q:q + ln].decode()); q += ln
+                        d[pair[0]] = pair[1]
+                    return d, q
+                _, q = rdict(q)
+                q += 12
+                nframes = struct.unpack_from("<i", data, q)[0]; q += 4
+                for _ in range(nframes):
+                    frame, q = rdict(q)
+                    if "_t" in frame:
+                        out["translation"] = tuple(int(v) for v in frame["_t"].split())
             walk(cstart + clen, cstart + clen + klen)
             p = cstart + clen + klen
         if p != end:
