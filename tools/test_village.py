@@ -78,17 +78,30 @@ function ConstrainVelocity(a, b, point, dir, relVel, mn, mx)
   body.want = VecAdd(body.want or {0,0,0}, VecScale(dir, relVel))
 end
 function ConstrainOrientation() end
-function GetPathState() return WORLD.pathState end
-function QueryPath(s, e, maxDist, radius)
-  WORLD.pathState = "busy"; WORLD.pathStart = s; WORLD.pathEnd = e; WORLD.pathAge = 0
+-- Path planners keyed by id; id 0 is the shared default one.
+WORLD.planners = {}
+local function planner(id) id = id or 0; WORLD.planners[id] = WORLD.planners[id] or {state = "idle"}; return WORLD.planners[id] end
+function QueryRequire() end
+function QueryRejectBody() end
+function GetPathState(id) return planner(id).state end
+local function startQuery(id, s, e)
+  local p = planner(id); p.state = "busy"; p.start = s; p["end"] = e; p.age = 0
   WORLD.pathQueries = WORLD.pathQueries + 1
   WORLD.queryTimes = WORLD.queryTimes or {}
   WORLD.queryTimes[#WORLD.queryTimes+1] = WORLD.time
 end
-function GetPathLength() return VecLength(VecSub(WORLD.pathEnd, WORLD.pathStart)) end
-function GetPathPoint(d)
-  local l = GetPathLength(); if l == 0 then return WORLD.pathStart end
-  return VecAdd(WORLD.pathStart, VecScale(VecSub(WORLD.pathEnd, WORLD.pathStart), d / l))
+function QueryPath(s, e, maxDist, radius) startQuery(0, s, e) end
+function GetPathLength(id) local p = planner(id); return VecLength(VecSub(p["end"], p.start)) end
+function GetPathPoint(d, id)
+  local p = planner(id); local l = GetPathLength(id); if l == 0 then return p.start end
+  return VecAdd(p.start, VecScale(VecSub(p["end"], p.start), d / l))
+end
+-- Per-agent planners exist only in the 2.x mock (see run()).
+function MOCK_PLANNERS()
+  WORLD.nextPlanner = 1
+  function CreatePathPlanner() local id = WORLD.nextPlanner; WORLD.nextPlanner = id + 1; planner(id); return id end
+  function DeletePathPlanner(id) WORLD.planners[id] = nil end
+  function PathPlannerQuery(id, s, e, maxDist, radius) startQuery(id, s, e) end
 end
 function GetAllPlayers() return {0} end
 function GetPlayerTransform(id) return {pos = WORLD.player.pos} end
@@ -116,9 +129,11 @@ function UiText(t) WORLD.lastText = t; return 0, 0, 0, 0 end
 -- except it cannot cross the wall while the wall stands.
 function STEP(dt)
   WORLD.time = WORLD.time + dt
-  if WORLD.pathState == "busy" then
-    WORLD.pathAge = WORLD.pathAge + dt
-    if WORLD.pathAge > 0.1 then WORLD.pathState = "done" end
+  for _, p in pairs(WORLD.planners) do
+    if p.state == "busy" then
+      p.age = p.age + dt
+      if p.age > 0.1 then p.state = "done" end
+    end
   end
   for h, b in pairs(WORLD.bodies) do
     if b.valid then
@@ -147,7 +162,7 @@ def run(mode: str, soft_wall: bool, seconds: float = 40.0):
     # start just before sunset so the night begins within a few seconds
     lua.execute("PARAMS.daylength = 100; PARAMS.starttime = 0.48; PARAMS.maxzombies = 1")
     if mode == "2x":
-        lua.execute("server = {}; client = {}; shared = {}")
+        lua.execute("server = {}; client = {}; shared = {}; MOCK_PLANNERS()")
     lua.execute(SCRIPT)
     g = lua.globals()
     if mode == "2x":
@@ -185,6 +200,7 @@ def run(mode: str, soft_wall: bool, seconds: float = 40.0):
         "hud": W.lastText,
         "spawn_xml": W.spawnXml,
         "shared_title": g.shared.title,
+        "planners_live": len([1 for _ in W.planners.items()]),
     }
 
 
@@ -204,6 +220,8 @@ if __name__ == "__main__":
         check(r["zombie_x"] is not None and r["zombie_x"] > 8.5, f"zombie reached the player (x={r['zombie_x']})", failures)
         check(r["player_health"] < 1, f"player was hurt (health {r['player_health']:.2f})", failures)
         check(r["path_queries"] >= 2, f"path re-queried ({r['path_queries']} queries)", failures)
+        if mode == "2x":
+            check(r["planners_live"] == 1, f"zombie got its own path planner ({r['planners_live']} live, shared slot unused)", failures)
         check(r["env_sun"] is not None and r["env_sun"] < 1, f"sun dimmed at night ({r['env_sun']})", failures)
         check(r["nightlight"] is True, "nightlight on at night", failures)
         check("NIGHT" in (r["shared_title"] or ""), f"HUD says night: {r['shared_title']!r}", failures)

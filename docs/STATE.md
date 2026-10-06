@@ -59,6 +59,25 @@ is a guess that one screenshot from Darren settles.
   Environment node and screenshot its property list: that is the
   authoritative list of lighting keys.
 
+## From the mod research (docs/reference-mods.md)
+
+- No open-source mod makes zombies break walls. Ours does it with
+  MakeHole; the game's own robots do a different thing when stuck: they
+  tag their shapes `breakall` for a tenth of a second. Untested lead if
+  MakeHole feels wrong.
+- Each zombie now has its own path planner (`CreatePathPlanner`), as the
+  Police-Chase-System mod does. Falls back to the shared planner on old
+  versions. Path queries use the robots' filter: `QueryRequire("physical
+  large")` and reject the zombie's own body.
+- Workshop mods worth subscribing to and sending me the files of, best
+  first: **Zombies [AUTUMNAGNIFICENT]** (the reference zombie mod, has a
+  markdown file explaining its insides), **Zombiedown - Multiplayer
+  Survival Improved and Updated** (pathfinding, spawning, stuck checks),
+  **Dynamic Time Mod** (tiny day/night, easy to read), **Minecraft
+  Village** by The_Wolfian (a hand-built one to compare with). Links in
+  reference-mods.md part B. Subscribed files land in
+  `Steam\steamapps\workshop\content\1167630\<id>\`.
+
 ## Next move
 
 Load it. Then, in order of what the screenshot shows: fix placement, fix

@@ -48,6 +48,10 @@ local PATH_STEP     = 0.5    -- metres between stored path points
 local ZOMBIE_HEIGHT = 1.7
 local ZOMBIE_XML = "<body dynamic='true' tags='zombie'><vox file='MOD/vox/zombie.vox'/></body>"
 
+-- Newer Teardown gives every zombie its own path planner. Older versions
+-- have one shared planner, so zombies take turns (see updatePaths).
+local HAS_PLANNERS = (CreatePathPlanner ~= nil)
+
 -- ========= server state =========
 local S = {
 	t = START_TIME, day = 1, night = false,
@@ -143,6 +147,7 @@ local function spawnZombie()
 	S.zombies[#S.zombies + 1] = {
 		body = body, shape = shape,
 		vox0 = GetShapeVoxelCount(shape),
+		planner = HAS_PLANNERS and CreatePathPlanner() or nil, querying = false,
 		path = nil, pathIndex = 1, pathTime = -1e9,
 		stuck = 0, biteTimer = 0, biteHigh = false, failedBites = 0,
 		hitTimer = 0, dying = nil, bites = 0,
@@ -152,36 +157,69 @@ end
 local function killZombie(i)
 	local z = S.zombies[i]
 	if IsHandleValid(z.body) then Delete(z.body) end
+	if z.planner then DeletePathPlanner(z.planner) end
 	table.remove(S.zombies, i)
 	if S.pathOwner == z then S.pathOwner = nil end
 end
 
-local function readPath(z)
-	local len = GetPathLength()
+-- Copy the finished path out of planner `id` (0 = the shared one).
+local function readPath(z, id)
+	local len = GetPathLength(id)
 	z.path = {}
 	local d = PATH_STEP
 	while d < len do
-		z.path[#z.path + 1] = GetPathPoint(d)
+		z.path[#z.path + 1] = GetPathPoint(d, id)
 		d = d + PATH_STEP
 	end
-	z.path[#z.path + 1] = GetPathPoint(len)
+	z.path[#z.path + 1] = GetPathPoint(len, id)
 	z.pathIndex = 1
 end
 
--- One path query at a time (the planner has a single default slot).
+-- Same filter the game's own robots use: only large physical shapes count
+-- as obstacles, and never the zombie itself.
+local function queryFilter(z)
+	QueryRequire("physical large")
+	QueryRejectBody(z.body)
+end
+
 local function updatePaths()
+	local now = GetTime()
+	if HAS_PLANNERS then
+		for _, z in ipairs(S.zombies) do
+			if IsHandleValid(z.body) and not z.dying then
+				if z.querying then
+					local st = GetPathState(z.planner)
+					if st == "done" or st == "fail" then
+						-- on "fail" the path still leads to the closest reachable point
+						readPath(z, z.planner)
+						z.querying = false
+					elseif st == "idle" then
+						z.querying = false
+					end
+				elseif now - z.pathTime > REPATH_EVERY then
+					local feet = GetBodyTransform(z.body).pos
+					local id = nearestPlayer(feet)
+					queryFilter(z)
+					PathPlannerQuery(z.planner, feet, playerFeet(id), 150, 1.0)
+					z.pathTime = now
+					z.querying = true
+				end
+			end
+		end
+		return
+	end
+
+	-- Old API: one shared planner, zombies take turns.
 	if S.pathOwner then
 		local st = GetPathState()
 		if st == "done" or st == "fail" then
-			-- on "fail" the path still leads to the closest reachable point
-			readPath(S.pathOwner)
+			readPath(S.pathOwner, 0)
 			S.pathOwner = nil
 		elseif st == "idle" then
 			S.pathOwner = nil
 		end
 	end
 	if S.pathOwner then return end
-	local now = GetTime()
 	local best, bestAge = nil, REPATH_EVERY
 	for _, z in ipairs(S.zombies) do
 		if IsHandleValid(z.body) and not z.dying then
@@ -192,6 +230,7 @@ local function updatePaths()
 	if best then
 		local feet = GetBodyTransform(best.body).pos
 		local id = nearestPlayer(feet)
+		queryFilter(best)
 		QueryPath(feet, playerFeet(id), 150, 1.0)
 		best.pathTime = now
 		S.pathOwner = best
