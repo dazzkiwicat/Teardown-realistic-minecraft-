@@ -348,8 +348,41 @@ local function dawn()
 	end
 end
 
+-- ========= doors =========
+-- Each door is its own dynamic body whose origin is the hinge line (see
+-- tools/build_level.py). Closed = the transform it was built with. The
+-- physics holds it there; a zombie that bites it to pieces simply removes
+-- it from this list. Opening with the interact key comes in brief 02.
+local function initDoors()
+	S.doors = {}
+	for _, body in ipairs(FindBodies("door", true)) do
+		S.doors[#S.doors + 1] = {
+			body = body, closed = GetBodyTransform(body),
+			swing = tonumber(GetTagValue(body, "swing")) or 1, open = false,
+		}
+	end
+end
+
+local function holdDoors()
+	for i = #S.doors, 1, -1 do
+		local d = S.doors[i]
+		if not IsHandleValid(d.body) or IsBodyBroken(d.body) then
+			table.remove(S.doors, i)
+		else
+			local tr = GetBodyTransform(d.body)
+			local mass = GetBodyMass(d.body)
+			if mass <= 0 then mass = 20 end
+			local yaw = d.open and d.swing * 90 or 0
+			local rx, ry, rz = GetQuatEuler(d.closed.rot)
+			ConstrainPosition(d.body, 0, tr.pos, d.closed.pos, 6, mass * 2)
+			ConstrainOrientation(d.body, 0, tr.rot, QuatEuler(rx, ry + yaw, rz), 8, mass * 2)
+		end
+	end
+end
+
 -- ========= server callbacks =========
 function server.init()
+	initDoors()
 	for _, loc in ipairs(FindLocations("zombiespawn", true)) do
 		S.spawnPoints[#S.spawnPoints + 1] = GetLocationTransform(loc).pos
 	end
@@ -406,6 +439,7 @@ function server.tick(dt)
 end
 
 function server.update(dt)
+	holdDoors()
 	updateZombies(dt)
 end
 

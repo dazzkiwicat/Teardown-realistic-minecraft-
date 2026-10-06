@@ -48,6 +48,11 @@ WORLD = {
 function GetTime() return WORLD.time end
 function DebugPrint(s) WORLD.debug[#WORLD.debug+1] = tostring(s) end
 function FindLocations(tag, global) return {1, 2, 3} end
+function FindBodies(tag, global) return {} end
+function GetTagValue(h, tag) return "" end
+function IsBodyBroken(h) return false end
+function ConstrainPosition() end
+function GetQuatEuler(q) return 0, 0, 0 end
 function GetLocationTransform(h) return {pos = WORLD.spawnLocs[h]} end
 function GetEnvironmentProperty(k)
   if WORLD.env[k] == nil then error("unknown environment property " .. k) end
