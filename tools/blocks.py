@@ -1,378 +1,499 @@
-"""Minecraft block -> Teardown voxel geometry and material.
+"""Minecraft block -> Teardown voxel geometry, texture and material.
 
-One Minecraft block is 1 metre. One Teardown voxel is 0.1 metre, so every
-block becomes a 10 x 10 x 10 voxel cell (B = 10 below). Partial blocks
-(stairs, slabs, fences, doors, panes, torches...) are built from small boxes
-inside that cell so the village keeps its Minecraft shapes.
+One Minecraft block is 1 metre and is built from R x R x R voxels (R = 16,
+matching Minecraft's 16-pixel textures). Teardown voxels are 0.1 m by
+default, so the vox shapes carry scale = 10 / R = 0.625 to make a block one
+metre again. Partial blocks (stairs, slabs, fences, doors, panes, torches)
+are built from boxes using Minecraft's own pixel measurements.
 
 Coordinates inside this file are MINECRAFT axes: x east, y up, z south.
-mc2vox.py converts to MagicaVoxel's z-up when it places the voxels.
+mc2vox.py swaps to MagicaVoxel's z-up when it writes.
+
+TEXTURES: every block type has a texture volume, an R x R x R array of shade
+numbers, generated once from noise or a pattern (cobble cells, plank rows,
+brick courses, grass speckle). Each shade is a (material, colour). The
+geometry decides which voxels exist, the texture decides their colour.
 
 MATERIAL is what the zombies care about. Teardown reads it from the palette
-index of the voxel (PALETTE_RANGES). Zombies will use MakeHole with only the
-"soft" radius, which eats glass, foliage, dirt, wood, plaster and plastic but
-not masonry or metal, so a cobblestone wall holds and a plank wall does not.
+index of the voxel (PALETTE_RANGES). Zombies bite with MakeHole using only
+the soft radius, so they eat glass, grass, dirt, wood, plaster and plastic
+but not concrete (cobblestone), brick or metal.
 """
+import numpy as np
 
-B = 10  # voxels per block edge
+R = 16                 # voxels per block edge
+SCALE = 10 / R         # Teardown <vox scale=...> so that a block is 1 m
 
-# Teardown material by MagicaVoxel palette index (1-based, inclusive).
-# Read off the official teardown_palette.vox / .png from the modding docs
-# (8 colours per row; row labels: glass, grass x2, dirt x2, rock x2, wood x2,
-# concrete x2, brick x2, plaster x2, weak metal x2, heavy metal x2, plastic x2,
-# hard metal, hard masonry, reserved..., unphysical x2).
-#
-# Hardness per the docs: SOFT = glass, grass(foliage), dirt, plastic, wood,
-# plaster. MEDIUM = concrete, brick, weak metal. HARD = hard masonry, hard
-# metal. Rock and heavy metal cannot be broken at all.
-# Zombies call MakeHole with only the soft radius, so plank walls fall and
-# cobblestone (concrete) walls hold.
+# Teardown material by MagicaVoxel palette index (1-based, inclusive),
+# read off the official teardown_palette.vox in the modding docs.
+# SOFT: glass, foliage(grass), dirt, plastic, wood, plaster.
+# MEDIUM: concrete, brick, metal(weak). HARD: hardmasonry, hardmetal.
+# UNBREAKABLE: rock, heavymetal.
 PALETTE_RANGES = {
     "glass":       (1, 8),
-    "foliage":     (9, 24),     # labelled "grass" on the palette
+    "foliage":     (9, 24),
     "dirt":        (25, 40),
-    "rock":        (41, 56),    # unbreakable: used for the ground base layer
+    "rock":        (41, 56),
     "wood":        (57, 72),
-    "concrete":    (73, 88),    # medium: cobblestone, stone
-    "brick":       (89, 104),   # medium: bricks, terracotta
+    "concrete":    (73, 88),
+    "brick":       (89, 104),
     "plaster":     (105, 120),
-    "metal":       (121, 136),  # "weak metal", medium
-    "heavymetal":  (137, 152),  # unbreakable
+    "metal":       (121, 136),
+    "heavymetal":  (137, 152),
     "plastic":     (153, 168),
     "hardmetal":   (169, 176),
     "hardmasonry": (177, 184),
-    "unphysical":  (225, 240),  # torch flames (emissive, no collision)
+    "unphysical":  (225, 240),
 }
 
-# ---- colours (approximate Minecraft textures) -------------------------------
-C = {
-    "cobble": (125, 125, 125), "mossy": (108, 118, 92), "smooth": (158, 158, 158),
-    "planks": (162, 130, 78), "bark": (109, 85, 50), "stripped": (177, 144, 86),
-    "grass": (116, 178, 62), "dirt": (134, 96, 67), "path": (148, 121, 72),
-    "farm": (96, 64, 40), "terracotta_w": (209, 178, 161), "terracotta": (152, 94, 67),
-    "glass": (205, 232, 240), "glass_y": (229, 229, 51), "glass_w": (240, 240, 240),
-    "leaves": (58, 118, 30), "torchwood": (120, 90, 50), "flame": (255, 196, 80),
-    "wool_y": (248, 197, 39), "wool_w": (233, 236, 236), "wool_g": (84, 109, 27),
-    "hay": (182, 150, 40), "book": (140, 112, 66), "iron": (170, 170, 170),
-    "bell": (240, 190, 60), "clay": (160, 166, 179), "dark": (62, 62, 62),
-    "brick": (150, 97, 83), "furnace": (92, 92, 92), "stem": (70, 140, 40),
-    "dandelion": (250, 230, 50), "poppy": (220, 40, 40), "daisy": (240, 240, 230),
-    "wheat": (190, 170, 70), "pot": (120, 70, 50), "water": (60, 110, 220),
-}
-
-
-def box(x0, x1, y0, y1, z0, z1):
-    """Voxel coords for the half-open box [x0,x1) x [y0,y1) x [z0,z1)."""
-    return {(x, y, z) for x in range(x0, x1) for y in range(y0, y1) for z in range(z0, z1)}
-
-
-def cube():
-    return box(0, B, 0, B, 0, B)
-
-
-# Direction helpers: offsets in (dx, dz) for Minecraft facing names.
 DIR = {"north": (0, -1), "south": (0, 1), "east": (1, 0), "west": (-1, 0)}
+OPPOSITE = {"north": "south", "south": "north", "east": "west", "west": "east"}
 
 
-def side_slab(direction, thickness, y0=0, y1=B):
-    """A vertical slab `thickness` voxels thick pressed against one side."""
+# =============================================================================
+# Geometry: functions return a list of boxes (x0, x1, y0, y1, z0, z1),
+# half-open, in voxels 0..R, Minecraft axes.
+# =============================================================================
+def cube():
+    return [(0, R, 0, R, 0, R)]
+
+
+def side_slab(direction, thickness, y0=0, y1=R):
     dx, dz = DIR[direction]
     if dx == 1:
-        return box(B - thickness, B, y0, y1, 0, B)
+        return [(R - thickness, R, y0, y1, 0, R)]
     if dx == -1:
-        return box(0, thickness, y0, y1, 0, B)
+        return [(0, thickness, y0, y1, 0, R)]
     if dz == 1:
-        return box(0, B, y0, y1, B - thickness, B)
-    return box(0, B, y0, y1, 0, thickness)
+        return [(0, R, y0, y1, R - thickness, R)]
+    return [(0, R, y0, y1, 0, thickness)]
 
 
 def half_towards(direction, y0, y1):
-    """The half of the cell on the `direction` side, between heights y0..y1."""
     dx, dz = DIR[direction]
+    h = R // 2
     if dx == 1:
-        return box(B // 2, B, y0, y1, 0, B)
+        return (h, R, y0, y1, 0, R)
     if dx == -1:
-        return box(0, B // 2, y0, y1, 0, B)
+        return (0, h, y0, y1, 0, R)
     if dz == 1:
-        return box(0, B, y0, y1, B // 2, B)
-    return box(0, B, y0, y1, 0, B // 2)
+        return (0, R, y0, y1, h, R)
+    return (0, R, y0, y1, 0, h)
 
 
 def stairs(props):
-    """Bottom half full, top half on the `facing` side (the high step).
-    half=top flips it upside down (ceiling stairs under roof eaves)."""
+    """Full lower half; upper half on the `facing` side. half=top flips."""
     facing = props.get("facing", "north")
+    h = R // 2
     if props.get("half") == "top":
-        return box(0, B, B // 2, B, 0, B) | half_towards(facing, 0, B // 2)
-    return box(0, B, 0, B // 2, 0, B) | half_towards(facing, B // 2, B)
+        return [(0, R, h, R, 0, R), half_towards(facing, 0, h)]
+    return [(0, R, 0, h, 0, R), half_towards(facing, h, R)]
 
 
 def slab(props):
     t = props.get("type", "bottom")
+    h = R // 2
     if t == "double":
         return cube()
     if t == "top":
-        return box(0, B, B // 2, B, 0, B)
-    return box(0, B, 0, B // 2, 0, B)
+        return [(0, R, h, R, 0, R)]
+    return [(0, R, 0, h, 0, R)]
 
 
-def _arm(direction, x0, x1, y0, y1):
-    """A rail from the centre post out to one side of the cell."""
+def arm(direction, y0, y1, half_width=1):
+    """A rail from the centre out to one side, 2*half_width voxels wide."""
     dx, dz = DIR[direction]
-    c0, c1 = B // 2 - 1, B // 2 + 1  # 2 voxels wide, centred
+    c0, c1 = R // 2 - half_width, R // 2 + half_width
+    h = R // 2
     if dx == 1:
-        return box(B // 2, B, y0, y1, c0, c1)
+        return (h, R, y0, y1, c0, c1)
     if dx == -1:
-        return box(0, B // 2, y0, y1, c0, c1)
+        return (0, h, y0, y1, c0, c1)
     if dz == 1:
-        return box(c0, c1, y0, y1, B // 2, B)
-    return box(c0, c1, y0, y1, 0, B // 2)
+        return (c0, c1, y0, y1, h, R)
+    return (c0, c1, y0, y1, 0, h)
 
 
 def fence(props):
-    out = box(3, 7, 0, B, 3, 7)  # 4x4 post
+    out = [(6, 10, 0, R, 6, 10)]  # 4x4 post, Minecraft's exact size
     for d in DIR:
         if props.get(d) == "true":
-            out |= _arm(d, 0, 0, 3, 5) | _arm(d, 0, 0, 7, 9)
+            out += [arm(d, 6, 9), arm(d, 12, 15)]
     return out
 
 
 def fence_gate(props):
     facing = props.get("facing", "north")
     across = ("east", "west") if facing in ("north", "south") else ("north", "south")
-    out = set()
+    out = []
     for d in across:
-        out |= _arm(d, 0, 0, 3, 5) | _arm(d, 0, 0, 7, 9)
-        # posts at the two ends
+        out += [arm(d, 6, 9), arm(d, 12, 15)]
         dx, dz = DIR[d]
-        px = 0 if dx == -1 else B - 2 if dx == 1 else B // 2 - 1
-        pz = 0 if dz == -1 else B - 2 if dz == 1 else B // 2 - 1
-        out |= box(px, px + 2, 0, B, pz, pz + 2)
+        px = 0 if dx == -1 else R - 2 if dx == 1 else R // 2 - 1
+        pz = 0 if dz == -1 else R - 2 if dz == 1 else R // 2 - 1
+        out.append((px, px + 2, 0, R, pz, pz + 2))
     return out
 
 
 def wall(props):
-    out = box(2, 8, 0, B, 2, 8)  # 6x6 post
+    out = [(4, 12, 0, R, 4, 12)]  # 8x8 post
     for d in DIR:
         v = props.get(d, "none")
         if v in ("low", "tall", "true"):
-            h = B if v == "tall" else B - 2
+            h = R if v == "tall" else R - 2
             dx, dz = DIR[d]
             if dx:
-                out |= box(B // 2 if dx == 1 else 0, B if dx == 1 else B // 2, 0, h, 3, 7)
+                out.append((R // 2 if dx == 1 else 0, R if dx == 1 else R // 2, 0, h, 5, 11))
             else:
-                out |= box(3, 7, 0, h, B // 2 if dz == 1 else 0, B if dz == 1 else B // 2)
+                out.append((5, 11, 0, h, R // 2 if dz == 1 else 0, R if dz == 1 else R // 2))
     return out
 
 
+DOOR_T = 3  # door thickness in voxels (Minecraft: 3 px)
+
+
+def door_closed_side(props):
+    """Which side of the cell a closed door panel sits against: opposite the
+    facing direction (the panel is at the back of the cell as you look in)."""
+    return OPPOSITE[props.get("facing", "north")]
+
+
 def door(props):
-    """Closed door: 2-voxel panel on the side opposite `facing`. Open: swung to
-    the hinge side. Each half (lower/upper) is its own block, so just a panel."""
-    facing = props.get("facing", "north")
-    opposite = {"north": "south", "south": "north", "east": "west", "west": "east"}
     if props.get("open") == "true":
-        # swing 90 degrees: panel along the hinge side
         hinge_left = props.get("hinge", "left") == "left"
         order = ["north", "east", "south", "west"]
-        i = order.index(facing)
+        i = order.index(props.get("facing", "north"))
         side = order[(i - 1) % 4] if hinge_left else order[(i + 1) % 4]
-        return side_slab(side, 2)
-    return side_slab(opposite[facing], 2)
+        return side_slab(side, DOOR_T)
+    return side_slab(door_closed_side(props), DOOR_T)
 
 
 def trapdoor(props):
     if props.get("open") == "true":
-        return side_slab(props.get("facing", "north"), 2)
+        return side_slab(props.get("facing", "north"), 3)
     if props.get("half") == "top":
-        return box(0, B, B - 2, B, 0, B)
-    return box(0, B, 0, 2, 0, B)
+        return [(0, R, R - 3, R, 0, R)]
+    return [(0, R, 0, 3, 0, R)]
 
 
 def pane(props):
-    out = box(4, 6, 0, B, 4, 6)
-    connected = [d for d in DIR if props.get(d) == "true"]
-    if not connected:
-        connected = list(DIR)
+    out = [(7, 9, 0, R, 7, 9)]
+    connected = [d for d in DIR if props.get(d) == "true"] or list(DIR)
     for d in connected:
         dx, dz = DIR[d]
         if dx:
-            out |= box(B // 2 if dx == 1 else 0, B if dx == 1 else B // 2, 0, B, 4, 6)
+            out.append((R // 2 if dx == 1 else 0, R if dx == 1 else R // 2, 0, R, 7, 9))
         else:
-            out |= box(4, 6, 0, B, B // 2 if dz == 1 else 0, B if dz == 1 else B // 2)
+            out.append((7, 9, 0, R, R // 2 if dz == 1 else 0, R if dz == 1 else R // 2))
     return out
 
 
 def torch_parts(props, on_wall):
-    """Returns [(stick coords), (flame coords)]."""
+    """Returns (stick boxes, flame boxes)."""
     if on_wall:
-        # wall_torch `facing` is the direction the torch points AWAY from the wall
-        dx, dz = DIR[props.get("facing", "north")]
-        cx = B // 2 - 1 - dx * 3
-        cz = B // 2 - 1 - dz * 3
-        stick = box(cx, cx + 2, 3, 8, cz, cz + 2)
-        flame = box(cx, cx + 2, 8, B, cz, cz + 2)
-    else:
-        stick = box(4, 6, 0, 6, 4, 6)
-        flame = box(4, 6, 6, 8, 4, 6)
-    return stick, flame
+        dx, dz = DIR[props.get("facing", "north")]  # points away from the wall
+        cx = R // 2 - 1 - dx * 5
+        cz = R // 2 - 1 - dz * 5
+        return [(cx, cx + 2, 4, 12, cz, cz + 2)], [(cx, cx + 2, 12, 15, cz, cz + 2)]
+    return [(7, 9, 0, 10, 7, 9)], [(7, 9, 10, 13, 7, 9)]
 
 
-def ladder(props):
-    return side_slab(props.get("facing", "north"), 1)
+# =============================================================================
+# Textures: shade volumes. Each returns (volume[R,R,R] of shade ids,
+# shades = [(material, (r,g,b)), ...]).
+# =============================================================================
+_tex_cache = {}
 
 
-def plant(kind, rng):
-    """Small foliage sprigs. kind: grass | tall | flower | wheat."""
-    out, tops = set(), set()
-    n, h = {"grass": (4, 5), "tall": (5, 9), "flower": (1, 5), "wheat": (6, 7)}[kind]
-    for _ in range(n):
-        x, z = rng.randrange(1, B - 1), rng.randrange(1, B - 1)
-        hh = max(2, h + rng.randrange(-1, 2))
-        out |= box(x, x + 1, 0, hh, z, z + 1)
-        if kind == "flower":
-            tops |= box(x - 1, x + 2, hh, hh + 2, z - 1, z + 2)
-    return out, tops
+def _rng(name):
+    return np.random.RandomState(abs(hash(name)) % (2 ** 31))
 
 
-# ---- the block table ---------------------------------------------------------
-# name -> (kind, material, colour key). Kind picks the geometry function.
+def _speckle(name, material, colours, weights=None):
+    rng = _rng(name)
+    k = len(colours)
+    p = weights or [1 / k] * k
+    vol = rng.choice(k, size=(R, R, R), p=p).astype(np.uint8)
+    return vol, [(material, c) for c in colours]
+
+
+def _voronoi(name, material, stone_shades, mortar):
+    """Stone cells with mortar between them. Cells are 3D so every face reads
+    as stonework."""
+    rng = _rng(name)
+    n = 10
+    pts = rng.rand(n, 3) * R
+    coords = np.stack(np.meshgrid(np.arange(R), np.arange(R), np.arange(R), indexing="ij"), -1) + 0.5
+    d = np.linalg.norm(coords[..., None, :] - pts[None, None, None, :, :], axis=-1)
+    order = np.argsort(d, axis=-1)
+    d1 = np.take_along_axis(d, order[..., :1], -1)[..., 0]
+    d2 = np.take_along_axis(d, order[..., 1:2], -1)[..., 0]
+    cell = order[..., 0]
+    shade = (cell % len(stone_shades)).astype(np.uint8)
+    vol = np.where(d2 - d1 < 1.1, len(stone_shades), shade).astype(np.uint8)
+    return vol, [(material, c) for c in stone_shades] + [(material, mortar)]
+
+
+def _planks(name, material, base, dark, light):
+    """Horizontal boards 4 voxels tall with dark seams; staggered board ends."""
+    rng = _rng(name)
+    x, y, z = np.meshgrid(np.arange(R), np.arange(R), np.arange(R), indexing="ij")
+    vol = np.zeros((R, R, R), dtype=np.uint8)
+    grain = rng.rand(R, R, R) < 0.12
+    vol[grain] = 2
+    seam_y = (y % 4 == 0)
+    row = y // 4
+    seam_x = ((x + row * 8) % 16 == 0)
+    seam_z = ((z + row * 8) % 16 == 0)
+    vol[seam_y | seam_x | seam_z] = 1
+    return vol, [(material, base), (material, dark), (material, light)]
+
+
+def _log(name, material, bark, bark_dark, end, ring):
+    """Bark on the sides, growth rings on the top and bottom layer."""
+    rng = _rng(name)
+    x, y, z = np.meshgrid(np.arange(R), np.arange(R), np.arange(R), indexing="ij")
+    streak = rng.rand(R, 1, R) < 0.35  # vertical streaks: same for all y
+    vol = np.where(np.broadcast_to(streak, (R, R, R)), 1, 0).astype(np.uint8)
+    r = np.sqrt((x - 7.5) ** 2 + (z - 7.5) ** 2)
+    rings = np.where((r.astype(int) % 2 == 0), 2, 3).astype(np.uint8)
+    cap = (y == 0) | (y == R - 1)
+    vol[cap] = rings[cap]
+    return vol, [(material, bark), (material, bark_dark), (material, end), (material, ring)]
+
+
+def _bricks(name, material, brick_a, brick_b, mortar):
+    x, y, z = np.meshgrid(np.arange(R), np.arange(R), np.arange(R), indexing="ij")
+    course = y // 4
+    mortar_mask = (y % 4 == 0) | ((x + course * 4) % 8 == 0) | ((z + course * 4) % 8 == 0)
+    rng = _rng(name)
+    vol = rng.choice(2, size=(R, R, R)).astype(np.uint8)
+    vol[mortar_mask] = 2
+    return vol, [(material, brick_a), (material, brick_b), (material, mortar)]
+
+
+def _grass_block(name):
+    rng = _rng(name)
+    vol = rng.choice(3, size=(R, R, R)).astype(np.uint8)  # dirt shades 0..2
+    x, y, z = np.meshgrid(np.arange(R), np.arange(R), np.arange(R), indexing="ij")
+    grass = rng.choice(3, size=(R, R, R)).astype(np.uint8) + 3
+    fringe = y >= R - 3  # grass on top and a short fringe down the sides
+    vol[fringe] = grass[fringe]
+    return vol, [("dirt", c) for c in DIRT_SHADES] + [("dirt", c) for c in GRASS_SHADES]
+
+
+def _glass(name, material, inner, frame):
+    x, y, z = np.meshgrid(np.arange(R), np.arange(R), np.arange(R), indexing="ij")
+    edge = (x == 0) | (x == R - 1) | (y == 0) | (y == R - 1) | (z == 0) | (z == R - 1)
+    vol = np.where(edge, 1, 0).astype(np.uint8)
+    return vol, [(material, inner), (material, frame)]
+
+
+def _bookshelf(name):
+    x, y, z = np.meshgrid(np.arange(R), np.arange(R), np.arange(R), indexing="ij")
+    rng = _rng(name)
+    vol = np.zeros((R, R, R), dtype=np.uint8)
+    books = ((y >= 2) & (y <= 6)) | ((y >= 9) & (y <= 13))
+    spine = rng.choice([1, 2, 3], size=(R, 1, R))
+    vol[books] = np.broadcast_to(spine, (R, R, R))[books]
+    return vol, [("wood", (150, 120, 70)), ("wood", (160, 60, 50)), ("wood", (60, 110, 70)), ("wood", (70, 80, 150))]
+
+
+def _uniform(name, material, colour):
+    return np.zeros((R, R, R), dtype=np.uint8), [(material, colour)]
+
+
+DIRT_SHADES = [(134, 96, 67), (121, 85, 58), (146, 108, 76)]
+GRASS_SHADES = [(110, 170, 60), (98, 158, 54), (122, 180, 70)]
+
+# name -> builder. Built lazily and cached.
+TEXTURES = {
+    "cobblestone": lambda n: _voronoi(n, "concrete", [(128, 128, 128), (112, 112, 112), (142, 142, 142), (120, 124, 120)], (86, 86, 86)),
+    "mossy_cobblestone": lambda n: _voronoi(n, "concrete", [(110, 118, 92), (96, 106, 80), (128, 132, 104)], (78, 84, 70)),
+    "smooth_stone": lambda n: _speckle(n, "concrete", [(160, 160, 160), (150, 150, 150)], [0.8, 0.2]),
+    "stone_dark": lambda n: _speckle(n, "concrete", [(92, 92, 92), (80, 80, 80), (104, 104, 104)]),
+    "bricks": lambda n: _bricks(n, "brick", (150, 97, 83), (138, 88, 76), (160, 160, 150)),
+    "terracotta": lambda n: _speckle(n, "brick", [(152, 94, 67), (140, 86, 60)], [0.7, 0.3]),
+    "white_terracotta": lambda n: _speckle(n, "plaster", [(209, 178, 161), (198, 168, 152)], [0.7, 0.3]),
+    "planks": lambda n: _planks(n, "wood", (162, 130, 78), (118, 92, 52), (176, 144, 90)),
+    "log": lambda n: _log(n, "wood", (109, 85, 50), (88, 68, 40), (177, 144, 86), (152, 122, 70)),
+    "stripped": lambda n: _log(n, "wood", (177, 144, 86), (160, 128, 74), (190, 158, 98), (170, 138, 80)),
+    "hay": lambda n: _speckle(n, "wood", [(182, 150, 40), (166, 134, 34), (198, 166, 52)]),
+    "dark_wood": lambda n: _speckle(n, "wood", [(62, 62, 62), (52, 52, 52)]),
+    "bookshelf": _bookshelf,
+    "grass_block": _grass_block,
+    "dirt": lambda n: _speckle(n, "dirt", DIRT_SHADES),
+    "dirt_path": lambda n: _speckle(n, "dirt", [(148, 121, 72), (136, 110, 64), (158, 130, 80)]),
+    "farmland": lambda n: _speckle(n, "dirt", [(96, 64, 40), (84, 56, 34), (108, 72, 46)]),
+    "clay": lambda n: _speckle(n, "dirt", [(160, 166, 179), (150, 156, 168)]),
+    "leaves": lambda n: _speckle(n, "foliage", [(58, 118, 30), (48, 104, 24), (70, 132, 38)]),
+    "stem": lambda n: _uniform(n, "foliage", (70, 140, 40)),
+    "wheat": lambda n: _speckle(n, "foliage", [(190, 170, 70), (176, 156, 60)]),
+    "dandelion": lambda n: _uniform(n, "foliage", (250, 230, 50)),
+    "poppy": lambda n: _uniform(n, "foliage", (220, 40, 40)),
+    "daisy": lambda n: _uniform(n, "foliage", (240, 240, 230)),
+    "glass": lambda n: _glass(n, "glass", (205, 232, 240), (170, 200, 210)),
+    "glass_y": lambda n: _glass(n, "glass", (229, 229, 51), (200, 200, 40)),
+    "glass_w": lambda n: _glass(n, "glass", (240, 240, 240), (210, 210, 210)),
+    "iron": lambda n: _uniform(n, "metal", (170, 170, 170)),
+    "dark_metal": lambda n: _uniform(n, "metal", (62, 62, 62)),
+    "bell": lambda n: _uniform(n, "metal", (240, 190, 60)),
+    "wool_y": lambda n: _speckle(n, "plastic", [(248, 197, 39), (236, 186, 34)], [0.8, 0.2]),
+    "wool_w": lambda n: _speckle(n, "plastic", [(233, 236, 236), (220, 222, 222)], [0.8, 0.2]),
+    "wool_g": lambda n: _speckle(n, "plastic", [(84, 109, 27), (76, 98, 24)], [0.8, 0.2]),
+    "torchwood": lambda n: _uniform(n, "wood", (120, 90, 50)),
+    "flame": lambda n: _uniform(n, "unphysical", (255, 196, 80)),
+    "pot": lambda n: _uniform(n, "plaster", (120, 70, 50)),
+}
+
+
+def texture(name):
+    if name not in _tex_cache:
+        _tex_cache[name] = TEXTURES[name](name)
+    return _tex_cache[name]
+
+
+# =============================================================================
+# The block table: name -> (kind, texture). Kind picks the geometry.
+# =============================================================================
 TABLE = {
-    "cobblestone": ("cube", "concrete", "cobble"),
-    "mossy_cobblestone": ("cube", "concrete", "mossy"),
-    "cobblestone_stairs": ("stairs", "concrete", "cobble"),
-    "cobblestone_slab": ("slab", "concrete", "cobble"),
-    "cobblestone_wall": ("wall", "concrete", "cobble"),
-    "smooth_stone": ("cube", "concrete", "smooth"),
-    "smooth_stone_slab": ("slab", "concrete", "smooth"),
-    "bricks": ("cube", "brick", "brick"),
-    "terracotta": ("cube", "brick", "terracotta"),
-    "white_terracotta": ("cube", "plaster", "terracotta_w"),
-    "furnace": ("cube", "concrete", "furnace"),
-    "smoker": ("cube", "concrete", "furnace"),
-    "blast_furnace": ("cube", "concrete", "furnace"),
-    "stonecutter": ("slab", "concrete", "smooth"),
-    "oak_planks": ("cube", "wood", "planks"),
-    "oak_log": ("cube", "wood", "bark"),
-    "stripped_oak_log": ("cube", "wood", "stripped"),
-    "stripped_oak_wood": ("cube", "wood", "stripped"),
-    "oak_stairs": ("stairs", "wood", "planks"),
-    "oak_slab": ("slab", "wood", "planks"),
-    "oak_fence": ("fence", "wood", "planks"),
-    "oak_fence_gate": ("gate", "wood", "planks"),
-    "oak_door": ("door", "wood", "planks"),
-    "oak_trapdoor": ("trapdoor", "wood", "planks"),
-    "oak_pressure_plate": ("plate", "wood", "planks"),
-    "ladder": ("ladder", "wood", "planks"),
-    "bookshelf": ("cube", "wood", "book"),
-    "chest": ("small", "wood", "planks"),
-    "barrel": ("cube", "wood", "bark"),
-    "composter": ("cube", "wood", "bark"),
-    "lectern": ("small", "wood", "planks"),
-    "loom": ("cube", "wood", "planks"),
-    "cartography_table": ("cube", "wood", "planks"),
-    "fletching_table": ("cube", "wood", "planks"),
-    "smithing_table": ("cube", "wood", "dark"),
-    "crafting_table": ("cube", "wood", "planks"),
-    "hay_block": ("cube", "wood", "hay"),
-    "grass_block": ("grass_block", "dirt", "dirt"),
-    "dirt": ("cube", "dirt", "dirt"),
-    "dirt_path": ("path", "dirt", "path"),
-    "farmland": ("path", "dirt", "farm"),
-    "clay": ("cube", "dirt", "clay"),
-    "oak_leaves": ("cube", "foliage", "leaves"),
-    "short_grass": ("plant", "foliage", "stem"),
-    "tall_grass": ("plant", "foliage", "stem"),
-    "wheat": ("plant", "foliage", "wheat"),
-    "dandelion": ("plant", "foliage", "dandelion"),
-    "poppy": ("plant", "foliage", "poppy"),
-    "oxeye_daisy": ("plant", "foliage", "daisy"),
-    "potted_dandelion": ("potted", "foliage", "dandelion"),
-    "glass_pane": ("pane", "glass", "glass"),
-    "yellow_stained_glass_pane": ("pane", "glass", "glass_y"),
-    "white_stained_glass_pane": ("pane", "glass", "glass_w"),
-    "iron_bars": ("pane", "metal", "iron"),
-    "torch": ("torch", "wood", "torchwood"),
-    "wall_torch": ("wall_torch", "wood", "torchwood"),
-    "yellow_wool": ("cube", "plastic", "wool_y"),
-    "white_wool": ("cube", "plastic", "wool_w"),
-    "yellow_carpet": ("carpet", "plastic", "wool_y"),
-    "white_carpet": ("carpet", "plastic", "wool_w"),
-    "green_carpet": ("carpet", "plastic", "wool_g"),
-    "white_bed": ("bed", "plastic", "wool_w"),
-    "yellow_bed": ("bed", "plastic", "wool_y"),
-    "bell": ("small", "metal", "bell"),
-    "water_cauldron": ("cube", "metal", "dark"),
-    "cauldron": ("cube", "metal", "dark"),
-    "brewing_stand": ("post", "metal", "iron"),
-    "grindstone": ("small", "metal", "iron"),
+    "cobblestone": ("cube", "cobblestone"),
+    "mossy_cobblestone": ("cube", "mossy_cobblestone"),
+    "cobblestone_stairs": ("stairs", "cobblestone"),
+    "cobblestone_slab": ("slab", "cobblestone"),
+    "cobblestone_wall": ("wall", "cobblestone"),
+    "smooth_stone": ("cube", "smooth_stone"),
+    "smooth_stone_slab": ("slab", "smooth_stone"),
+    "bricks": ("cube", "bricks"),
+    "terracotta": ("cube", "terracotta"),
+    "white_terracotta": ("cube", "white_terracotta"),
+    "furnace": ("cube", "stone_dark"),
+    "smoker": ("cube", "stone_dark"),
+    "blast_furnace": ("cube", "stone_dark"),
+    "stonecutter": ("slab", "smooth_stone"),
+    "oak_planks": ("cube", "planks"),
+    "oak_log": ("cube", "log"),
+    "stripped_oak_log": ("cube", "stripped"),
+    "stripped_oak_wood": ("cube", "stripped"),
+    "oak_stairs": ("stairs", "planks"),
+    "oak_slab": ("slab", "planks"),
+    "oak_fence": ("fence", "planks"),
+    "oak_fence_gate": ("gate", "planks"),
+    "oak_door": ("door", "planks"),
+    "oak_trapdoor": ("trapdoor", "planks"),
+    "oak_pressure_plate": ("plate", "planks"),
+    "ladder": ("ladder", "planks"),
+    "bookshelf": ("cube", "bookshelf"),
+    "chest": ("small", "planks"),
+    "barrel": ("cube", "log"),
+    "composter": ("cube", "log"),
+    "lectern": ("small", "planks"),
+    "loom": ("cube", "planks"),
+    "cartography_table": ("cube", "planks"),
+    "fletching_table": ("cube", "planks"),
+    "smithing_table": ("cube", "dark_wood"),
+    "crafting_table": ("cube", "planks"),
+    "hay_block": ("cube", "hay"),
+    "grass_block": ("cube", "grass_block"),
+    "dirt": ("cube", "dirt"),
+    "dirt_path": ("path", "dirt_path"),
+    "farmland": ("path", "farmland"),
+    "clay": ("cube", "clay"),
+    "oak_leaves": ("cube", "leaves"),
+    "short_grass": ("plant", "stem"),
+    "tall_grass": ("plant", "stem"),
+    "wheat": ("plant", "wheat"),
+    "dandelion": ("plant", "dandelion"),
+    "poppy": ("plant", "poppy"),
+    "oxeye_daisy": ("plant", "daisy"),
+    "potted_dandelion": ("potted", "dandelion"),
+    "glass_pane": ("pane", "glass"),
+    "yellow_stained_glass_pane": ("pane", "glass_y"),
+    "white_stained_glass_pane": ("pane", "glass_w"),
+    "iron_bars": ("pane", "iron"),
+    "torch": ("torch", "torchwood"),
+    "wall_torch": ("wall_torch", "torchwood"),
+    "yellow_wool": ("cube", "wool_y"),
+    "white_wool": ("cube", "wool_w"),
+    "yellow_carpet": ("carpet", "wool_y"),
+    "white_carpet": ("carpet", "wool_w"),
+    "green_carpet": ("carpet", "wool_g"),
+    "white_bed": ("bed", "wool_w"),
+    "yellow_bed": ("bed", "wool_y"),
+    "bell": ("small", "bell"),
+    "water_cauldron": ("cube", "dark_metal"),
+    "cauldron": ("cube", "dark_metal"),
+    "brewing_stand": ("post", "iron"),
+    "grindstone": ("small", "iron"),
     # Skipped on purpose (Teardown has its own water entity; lava later):
     "air": None, "water": None, "lava": None, "jigsaw": None, "structure_void": None,
     "cave_air": None,
 }
 
+# Representative colour per block for the low-res village preview.
+PREVIEW_COLOUR = {name: texture(entry[1])[1][0][1] for name, entry in TABLE.items() if entry}
 
-def parts(name: str, props: dict, rng):
-    """Yield (coords, material, rgb) for one block. name has no 'minecraft:'."""
+
+def parts(name, props, rng):
+    """Yield (boxes, texture_name) for one block. name has no 'minecraft:'."""
     entry = TABLE.get(name, "MISSING")
     if entry == "MISSING":
         raise KeyError(f"no mapping for block {name}; add it to blocks.TABLE")
     if entry is None:
         return
-    kind, material, colour = entry
-    rgb = C[colour]
+    kind, tex = entry
     if kind == "cube":
-        yield cube(), material, rgb
+        yield cube(), tex
     elif kind == "stairs":
-        yield stairs(props), material, rgb
+        yield stairs(props), tex
     elif kind == "slab":
-        yield slab(props), material, rgb
+        yield slab(props), tex
     elif kind == "fence":
-        yield fence(props), material, rgb
+        yield fence(props), tex
     elif kind == "gate":
-        yield fence_gate(props), material, rgb
+        yield fence_gate(props), tex
     elif kind == "wall":
-        yield wall(props), material, rgb
+        yield wall(props), tex
     elif kind == "door":
-        yield door(props), material, rgb
+        yield door(props), tex
     elif kind == "trapdoor":
-        yield trapdoor(props), material, rgb
+        yield trapdoor(props), tex
     elif kind == "plate":
-        yield box(1, B - 1, 0, 1, 1, B - 1), material, rgb
+        yield [(1, R - 1, 0, 1, 1, R - 1)], tex
     elif kind == "ladder":
-        yield ladder(props), material, rgb
+        yield side_slab(props.get("facing", "north"), 2), tex
     elif kind == "carpet":
-        yield box(0, B, 0, 1, 0, B), material, rgb
+        yield [(0, R, 0, 1, 0, R)], tex
     elif kind == "bed":
-        yield box(0, B, 3, 6, 0, B), material, rgb
-        yield box(0, B, 0, 3, 0, B), "wood", C["planks"]
+        yield [(0, R, 3, 9, 0, R)], tex
+        yield [(0, 2, 0, 3, 0, 2), (R - 2, R, 0, 3, 0, 2), (0, 2, 0, 3, R - 2, R), (R - 2, R, 0, 3, R - 2, R)], "planks"
     elif kind == "small":
-        yield box(1, B - 1, 0, B - 1, 1, B - 1), material, rgb
+        yield [(1, R - 1, 0, R - 2, 1, R - 1)], tex
     elif kind == "post":
-        yield box(4, 6, 0, B - 2, 4, 6), material, rgb
+        yield [(7, 9, 0, R - 2, 7, 9)], tex
     elif kind == "pane":
-        yield pane(props), material, rgb
-    elif kind == "torch":
-        stick, flame = torch_parts(props, False)
-        yield stick, material, rgb
-        yield flame, "unphysical", C["flame"]  # emissive, see mc2vox
-    elif kind == "wall_torch":
-        stick, flame = torch_parts(props, True)
-        yield stick, material, rgb
-        yield flame, "unphysical", C["flame"]
-    elif kind == "grass_block":
-        yield box(0, B, 0, B - 1, 0, B), "dirt", C["dirt"]
-        yield box(0, B, B - 1, B, 0, B), "dirt", C["grass"]
+        yield pane(props), tex
+    elif kind in ("torch", "wall_torch"):
+        stick, flame = torch_parts(props, kind == "wall_torch")
+        yield stick, tex
+        yield flame, "flame"
     elif kind == "path":
-        yield box(0, B, 0, B - 1, 0, B), material, rgb
+        yield [(0, R, 0, R - 1, 0, R)], tex
     elif kind == "plant":
-        pk = {"short_grass": "grass", "tall_grass": "tall", "wheat": "wheat"}.get(name, "flower")
-        stems, tops = plant(pk, rng)
-        yield stems, "foliage", C["stem"] if pk != "wheat" else rgb
+        n, h = {"short_grass": (6, 7), "tall_grass": (7, 13), "wheat": (9, 11)}.get(name, (1, 7))
+        stems, tops = [], []
+        for _ in range(n):
+            x, z = rng.randrange(1, R - 1), rng.randrange(1, R - 1)
+            hh = max(3, h + rng.randrange(-2, 3))
+            stems.append((x, x + 1, 0, hh, z, z + 1))
+            if name in ("dandelion", "poppy", "oxeye_daisy"):
+                tops.append((max(0, x - 1), min(R, x + 2), hh, min(R, hh + 2), max(0, z - 1), min(R, z + 2)))
+        yield stems, "stem" if name not in ("wheat",) else tex
         if tops:
-            yield tops, "foliage", rgb
+            yield tops, tex
     elif kind == "potted":
-        yield box(3, 7, 0, 4, 3, 7), "plaster", C["pot"]
-        yield box(4, 6, 4, 7, 4, 6), "foliage", C["stem"]
-        yield box(3, 7, 7, 9, 3, 7), "foliage", rgb
+        yield [(5, 11, 0, 6, 5, 11)], "pot"
+        yield [(7, 9, 6, 11, 7, 9)], "stem"
+        yield [(5, 11, 11, 14, 5, 11)], tex
     else:
         raise KeyError(f"unknown kind {kind} for {name}")
