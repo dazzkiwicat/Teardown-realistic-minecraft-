@@ -40,7 +40,7 @@ VOXDIR = MOD / "vox"
 PREVIEW = ROOT / "preview"
 
 # Files in mod/vox that this build does not make but must keep.
-KEEP = {"zombie.vox"}           # written by tools/make_zombie.py, used by village.lua
+KEEP = {"zombie.vox", "pickaxe.vox", "placer.vox"}  # made by make_zombie.py and make_tools.py, used by village.lua
 
 # ---- the village ------------------------------------------------------------
 PITCH = 18                      # plot pitch, metres

@@ -78,6 +78,33 @@ is a guess that one screenshot from Darren settles.
   reference-mods.md part B. Subscribed files land in
   `Steam\steamapps\workshop\content\1167630\<id>\`.
 
+## Round 2 (6 Oct, evening): what changed and what to look for
+
+Darren loaded round 1: it worked, zombies walked and bit. Complaints: low
+res, zombies trip, no doors, no pickaxe, no building. Darren is on
+Teardown 2.x (the Castdown game-mode menu proves it; Castdown is the
+game's own fishing mode, not ours).
+
+Built since: 16-voxel textured blocks, 16 buildings with roads, doors as
+hinged bodies, hovering zombies, pickaxe, block placer. 87 mock checks
+pass. None of it seen in the game yet. Watch for:
+
+1. **Doors**: if they hang in the wrong place or swing the wrong way, the
+   one constant `YAW_SIGN` in `tools/build_level.py` flips both. The
+   butcher's north door is the clearest test.
+2. **Placed blocks**: colour is written as 0..1 values on the voxbox
+   string; if placed blocks come out white or black, change to 0..255 in
+   `placeBlock` in village.lua. Material names `concrete`, `glass` are
+   undocumented guesses; `wood` is documented.
+3. **Tools**: registered server-side and enabled two ways (registry key
+   and `SetToolEnabled`). If they do not appear in the tool bar, one of
+   those is wrong. The pickaxe may look oversized in hand.
+4. **Hover**: zombies float 0.2 m. If they bob or sink, tune `hover`
+   param and the gain 8 in `moveZombie`.
+5. **Temple door** starts 1 m below floor level (template quirk).
+6. Castdown menu: a 2.x game-mode selector shown for content mods; no
+   known way to hide it from the mod yet.
+
 ## Next move
 
 Load it. Then, in order of what the screenshot shows: fix placement, fix

@@ -18,6 +18,16 @@ You should see: a grassy field with a fountain in the middle, three small
 wooden houses, a bigger house, a farm and an animal pen. A line of text at
 the top says `Day 1   DAY` with a sunset countdown.
 
+## Controls
+
+- **Interact key (E by default)** while looking at a door: opens or closes
+  it. Zombies cannot open doors; they chew through them.
+- **Pickaxe** (select it from the tool bar): use it on any block to mine a
+  whole metre cube, cobblestone included. Hit a zombie with it too.
+- **Block placer**: use it to place a one metre block on the surface you
+  aim at. The grab key (right mouse by default) cycles cobblestone, planks,
+  glass. Cobblestone is the zombie-proof one.
+
 ## What to try
 
 - Wait for the countdown. The light drops, the text says `NIGHT`, and

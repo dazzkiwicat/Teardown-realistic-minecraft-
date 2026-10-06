@@ -11,6 +11,14 @@ What it does
     cobblestone (concrete), brick or metal. Build with stone to be safe.
   * Touching a zombie costs health and shoves you. Breaking a zombie (sledge,
     shotgun, car...) kills it: it is made of wood. At sunrise they crumble.
+  * Zombies hover a little above the ground like the game's robots (two
+    downward raycasts hold the height), so they glide up steps instead of
+    tripping on them.
+  * Doors (bodies tagged "door swing=+1/-1") are held shut by physics and
+    open/close with the interact key. Zombies never open them: they chew
+    through, doors are wood.
+  * Two tools: a PICKAXE (removes one whole block, cobblestone included) and
+    a BLOCK PLACER (cobblestone / planks / glass, cycled with the grab input).
 
 Runs on Teardown 2.x (server/client tables) and on 1.x (global callbacks)
 through the shim at the bottom.
@@ -31,6 +39,7 @@ local ZOMBIE_SPEED  = GetFloatParam("zombiespeed", 2.2) -- metres per second
 local START_TIME    = GetFloatParam("starttime", 0.3)   -- 0..1, 0.5 = sunset
 local BURN_AT_DAWN  = GetBoolParam("burnatdawn", false) -- true = set them on fire (spreads!)
 local FRONT_FLIP    = GetBoolParam("frontflip", false)  -- set true if zombies walk backwards
+local HOVER         = GetFloatParam("hover", 0.2)       -- metres between feet and ground
 
 -- The zombie's arms reach 0.45 m in front of its feet, so a wall it presses
 -- against is about 0.45 m ahead. The bite sphere covers 0.45..1.55 m ahead:
@@ -46,6 +55,8 @@ local SPAWN_INTERVAL = 6.0
 local REPATH_EVERY  = 1.5    -- seconds between path queries per zombie
 local PATH_STEP     = 0.5    -- metres between stored path points
 local ZOMBIE_HEIGHT = 1.7
+local HIP_HEIGHT    = 0.9    -- hover raycasts start this far above the feet
+local HOVER_AHEAD   = 0.35   -- second raycast this far ahead of the hips
 local ZOMBIE_XML = "<body dynamic='true' tags='zombie'><vox file='MOD/vox/zombie.vox'/></body>"
 
 -- Newer Teardown gives every zombie its own path planner. Older versions
@@ -245,6 +256,20 @@ local function goalFor(z, feet, target)
 	return z.path[z.pathIndex]
 end
 
+-- Distance from the hips down to the ground: the shorter of a raycast
+-- straight down from the hips and one from HOVER_AHEAD in front of them.
+-- nil if both miss (standing over a hole).
+local function groundDistance(z, feet, dir)
+	local hips = VecAdd(feet, Vec(0, HIP_HEIGHT, 0))
+	local best
+	for _, origin in ipairs({ hips, VecAdd(hips, VecScale(dir, HOVER_AHEAD)) }) do
+		QueryRejectBody(z.body)   -- filters only last for one query
+		local hit, d = QueryRaycast(origin, Vec(0, -1, 0), HIP_HEIGHT + HOVER + 2)
+		if hit and (best == nil or d < best) then best = d end
+	end
+	return best
+end
+
 local function moveZombie(z, dt)
 	local tr = GetBodyTransform(z.body)
 	local feet = tr.pos
@@ -269,11 +294,19 @@ local function moveZombie(z, dt)
 	ConstrainVelocity(z.body, 0, com, dir, want, -maxImp, maxImp)
 	ConstrainVelocity(z.body, 0, com, side, 0, -maxImp, maxImp)
 	local lookTarget = FRONT_FLIP and VecSub(feet, dir) or VecAdd(feet, dir)
-	ConstrainOrientation(z.body, 0, tr.rot, QuatLookAt(feet, lookTarget), 8, mass * 0.15)
+	ConstrainOrientation(z.body, 0, tr.rot, QuatLookAt(feet, lookTarget), 10, mass * 0.6)
+	-- kill roll and pitch spin, leave yaw free
+	ConstrainAngularVelocity(z.body, 0, dir, 0, -mass * 0.3, mass * 0.3)
+	ConstrainAngularVelocity(z.body, 0, side, 0, -mass * 0.3, mass * 0.3)
 
-	-- climb a step when the path goes up right in front of us
-	if goal[2] > feet[2] + 0.3 and dGoal < 1.2 then
-		ConstrainVelocity(z.body, 0, com, Vec(0, 1, 0), 4.5, 0, maxImp * 3)
+	-- hover like the game's robots: hold the hips HIP_HEIGHT + HOVER above
+	-- the ground. The raycast ahead sees a step early, so the body rises
+	-- onto it instead of tripping. Over a hole (no hit) gravity takes over.
+	local measured = groundDistance(z, feet, dir)
+	if measured then
+		local desired = HIP_HEIGHT + HOVER
+		local vy = clamp((desired - measured) * 8, -3, 4)
+		ConstrainVelocity(z.body, 0, com, Vec(0, 1, 0), vy, -maxImp * 0.5, maxImp * 3)
 	end
 
 	-- stuck?  (wanting to move, barely moving)
@@ -348,11 +381,25 @@ local function dawn()
 	end
 end
 
+-- ========= server calls from client code =========
+-- Client code (input, aiming) asks the server to do server-only work
+-- (MakeHole, Spawn, door state). On 2.x this goes through ServerCall with the
+-- function's full name, as in the docs' example ServerCall("server.setPlayerReady", ...).
+-- On 1.x there is only one side, so the function is simply called.
+local function callServer(name, ...)
+	if LEGACY then
+		return server[name](...)
+	end
+	ServerCall("server." .. name, ...)
+end
+
 -- ========= doors =========
 -- Each door is its own dynamic body whose origin is the hinge line (see
--- tools/build_level.py). Closed = the transform it was built with. The
--- physics holds it there; a zombie that bites it to pieces simply removes
--- it from this list. Opening with the interact key comes in brief 02.
+-- tools/build_level.py). Closed = the transform it was built with; open =
+-- that turned 90 degrees in the door's swing direction. The physics holds
+-- the hinge in place and the leaf at the target angle; a zombie that bites
+-- the door to pieces simply removes it from this list. Zombies never open
+-- doors: only server.toggleDoor (the interact key) changes `open`.
 local function initDoors()
 	S.doors = {}
 	for _, body in ipairs(FindBodies("door", true)) do
@@ -373,6 +420,8 @@ local function holdDoors()
 			local mass = GetBodyMass(d.body)
 			if mass <= 0 then mass = 20 end
 			local yaw = d.open and d.swing * 90 or 0
+			-- QuatRotateQuat is not in the docs, so build the target from
+			-- the closed pose's euler angles.
 			local rx, ry, rz = GetQuatEuler(d.closed.rot)
 			ConstrainPosition(d.body, 0, tr.pos, d.closed.pos, 6, mass * 2)
 			ConstrainOrientation(d.body, 0, tr.rot, QuatEuler(rx, ry + yaw, rz), 8, mass * 2)
@@ -380,9 +429,101 @@ local function holdDoors()
 	end
 end
 
+function server.toggleDoor(body)
+	for _, d in ipairs(S.doors or {}) do
+		if d.body == body then
+			d.open = not d.open
+			return
+		end
+	end
+end
+
+-- ========= tools: pickaxe and block placer =========
+local TOOLS = {
+	{ id = "pickaxe", name = "Pickaxe",      file = "MOD/vox/pickaxe.vox" },
+	{ id = "placer",  name = "Block Placer", file = "MOD/vox/placer.vox" },
+}
+-- Placer materials. The voxbox `material` names and the `color` attribute are
+-- not documented; these are Teardown's palette group names, colour 0..1.
+local BLOCKS = {
+	{ label = "COBBLESTONE", material = "concrete", rgb = { 125, 125, 125 } },
+	{ label = "PLANKS",      material = "wood",     rgb = { 162, 130, 78 } },
+	{ label = "GLASS",       material = "glass",    rgb = { 205, 232, 240 } },
+}
+local PICK_RANGE, PICK_COOLDOWN = 4, 0.35
+local PLACE_RANGE, PLACE_COOLDOWN = 5, 0.25
+local SWING_TIME = 0.2      -- pickaxe swing animation, seconds
+local DOOR_RANGE = 3
+local CYCLE_INPUT = "grab"  -- logical input "Grab" (right mouse by default)
+
+-- Server: register both tools (RegisterTool is SERVER ONLY) and enable them.
+-- index.html enables a custom tool with the registry key
+-- game.tool.<id>.enabled; api.html 2.1 says tools start disabled and must be
+-- enabled per player with SetToolEnabled. Do both.
+local function registerTools()
+	if not RegisterTool then
+		DebugPrint("village.lua: RegisterTool missing, no pickaxe or placer")
+		return
+	end
+	for _, t in ipairs(TOOLS) do
+		RegisterTool(t.id, t.name, t.file)
+		SetBool("game.tool." .. t.id .. ".enabled", true)
+	end
+	S.toolsEnabledFor = {}
+end
+
+local function enableToolsForPlayers()
+	if LEGACY or not SetToolEnabled or not S.toolsEnabledFor then return end
+	for _, id in ipairs(players()) do
+		if not S.toolsEnabledFor[id] then
+			S.toolsEnabledFor[id] = true
+			for _, t in ipairs(TOOLS) do SetToolEnabled(t.id, true, id) end
+		end
+	end
+end
+
+local function snapCentre(v)
+	return Vec(math.floor(v[1]) + 0.5, math.floor(v[2]) + 0.5, math.floor(v[3]) + 0.5)
+end
+
+-- Pickaxe on a block: remove the whole one-metre block the hit is in.
+-- Medium radius too, so cobblestone (concrete) breaks as in Minecraft.
+function server.mineBlock(centre)
+	MakeHole(centre, 0.5, 0.5, 0)
+end
+
+-- Pickaxe on a zombie: a small soft-only bite out of it.
+function server.hitZombie(pos)
+	MakeHole(pos, 0.35, 0, 0)
+end
+
+-- Is the one-metre cell with min corner c inside any player?
+-- (feet .. feet + 1.8 tall, 0.4 m around the feet horizontally)
+local function cellHitsPlayer(c)
+	for _, id in ipairs(players()) do
+		local p = playerFeet(id)
+		if c[2] < p[2] + 1.8 and c[2] + 1 > p[2] then
+			local dx = math.max(c[1] - p[1], 0, p[1] - (c[1] + 1))
+			local dz = math.max(c[3] - p[3], 0, p[3] - (c[3] + 1))
+			if dx * dx + dz * dz < 0.4 * 0.4 then return true end
+		end
+	end
+	return false
+end
+
+function server.placeBlock(corner, kind)
+	local b = BLOCKS[kind] or BLOCKS[1]
+	if cellHitsPlayer(corner) then return end
+	-- The position goes ONLY in the transform; the XML string has none.
+	local xml = string.format("<voxbox size='10 10 10' material='%s' color='%.3f %.3f %.3f'/>",
+		b.material, b.rgb[1] / 255, b.rgb[2] / 255, b.rgb[3] / 255)
+	Spawn(xml, Transform(Vec(corner[1], corner[2], corner[3])), true)
+end
+
 -- ========= server callbacks =========
 function server.init()
 	initDoors()
+	registerTools()
 	for _, loc in ipairs(FindLocations("zombiespawn", true)) do
 		S.spawnPoints[#S.spawnPoints + 1] = GetLocationTransform(loc).pos
 	end
@@ -397,6 +538,8 @@ function server.init()
 end
 
 function server.tick(dt)
+	enableToolsForPlayers()
+
 	-- clock
 	S.t = S.t + dt / DAY_LENGTH
 	if S.t >= 1 then
@@ -443,9 +586,104 @@ function server.update(dt)
 	updateZombies(dt)
 end
 
--- ========= client callbacks (HUD) =========
+-- ========= client: aiming, doors, tools, HUD =========
+local C = { cooldown = 0, swing = 0, block = 1, doorHint = false, toolLine = "" }
+
+-- Raycast from the player camera along its forward (-z) axis.
+-- Returns hit, point, normal, shape.
+local function aim(maxDist)
+	local cam = GetPlayerCameraTransform()
+	local dir = TransformToParentVec(cam, Vec(0, 0, -1))
+	if QueryRejectPlayer then QueryRejectPlayer() end
+	local toolBody = GetToolBody and GetToolBody() or 0
+	if toolBody ~= 0 then QueryRejectBody(toolBody) end
+	local hit, d, normal, shape = QueryRaycast(cam.pos, dir, maxDist)
+	if not hit then return false end
+	return true, VecAdd(cam.pos, VecScale(dir, d)), normal, shape
+end
+
+local function bodyTagged(shape, tag)
+	if not shape or shape == 0 then return nil end
+	local body = GetShapeBody(shape)
+	if body and body ~= 0 and HasTag(body, tag) then return body end
+	return nil
+end
+
+-- Id of the tool the local player holds. GetPlayerTool is the 2.x call;
+-- on 1.x fall back to the registry key the old game used (not in the docs).
+local function heldTool()
+	if GetPlayerTool then return GetPlayerTool() or "" end
+	return GetString("game.player.tool")
+end
+
+local function clientDoors()
+	local hit, _, _, shape = aim(DOOR_RANGE)
+	local door = hit and bodyTagged(shape, "door") or nil
+	C.doorHint = door ~= nil
+	if door and InputPressed("interact") then
+		callServer("toggleDoor", door)
+	end
+end
+
+local function usePickaxe()
+	local hit, pos, normal, shape = aim(PICK_RANGE)
+	if not hit then return end
+	if bodyTagged(shape, "zombie") then
+		callServer("hitZombie", pos)
+	else
+		-- step 5 cm INTO the surface so the hit lands inside the block
+		callServer("mineBlock", snapCentre(VecSub(pos, VecScale(normal, 0.05))))
+	end
+end
+
+local function usePlacer()
+	local hit, pos, normal = aim(PLACE_RANGE)
+	if not hit then return end
+	-- step 5 cm OUT of the surface: the empty cell in front of the face
+	local p = VecAdd(pos, VecScale(normal, 0.05))
+	callServer("placeBlock", Vec(math.floor(p[1]), math.floor(p[2]), math.floor(p[3])), C.block)
+end
+
+local function clientTools(dt)
+	C.cooldown = math.max(0, C.cooldown - dt)
+	C.swing = math.max(0, C.swing - dt)
+	local tool = heldTool()
+	local canUse = (GetPlayerCanUseTool == nil) or GetPlayerCanUseTool()
+
+	if tool == "pickaxe" then
+		C.toolLine = "Pickaxe"
+		if canUse and InputPressed("usetool") and C.cooldown <= 0 then
+			C.cooldown = PICK_COOLDOWN
+			C.swing = SWING_TIME
+			usePickaxe()
+		end
+		-- swing: tip the head forward, decaying to rest over SWING_TIME.
+		-- SetToolTransform must be set every frame from tick.
+		if SetToolTransform then
+			SetToolTransform(Transform(Vec(0, 0, 0), QuatEuler(-50 * C.swing / SWING_TIME, 0, 0)))
+		end
+	elseif tool == "placer" then
+		if canUse and InputPressed(CYCLE_INPUT) then
+			C.block = C.block % #BLOCKS + 1
+		end
+		if canUse and InputPressed("usetool") and C.cooldown <= 0 then
+			C.cooldown = PLACE_COOLDOWN
+			usePlacer()
+		end
+		C.toolLine = "Placer: " .. BLOCKS[C.block].label
+	elseif tool ~= "" then
+		C.toolLine = "Tool: " .. tool
+	else
+		C.toolLine = ""
+	end
+end
+
 function client.init() end
-function client.tick(dt) end
+
+function client.tick(dt)
+	clientDoors()
+	clientTools(dt)
+end
 
 function client.draw()
 	UiPush()
@@ -461,7 +699,22 @@ function client.draw()
 	UiTranslate(0, 28)
 	UiColor(1, 0.85, 0.4)
 	UiText(shared.hint or "")
+	UiTranslate(0, 28)
+	UiColor(0.8, 0.9, 1)
+	UiText(C.toolLine)
 	UiPop()
+
+	if C.doorHint then
+		UiPush()
+		UiAlign("center middle")
+		UiTranslate(UiCenter(), UiMiddle() + 60)
+		UiFont("regular.ttf", 22)
+		UiColor(1, 1, 1)
+		UiTextOutline(0, 0, 0, 1, 0.1)
+		-- the input docs name the key only as the logical input "interact"
+		UiText("Interact: open/close door")
+		UiPop()
+	end
 end
 
 -- ========= compatibility shim (part 2) =========
