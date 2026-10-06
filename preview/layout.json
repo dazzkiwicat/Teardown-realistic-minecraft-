@@ -1,0 +1,192 @@
+{
+ "placed": [
+  {
+   "name": "town_centers/plains_fountain_01",
+   "file": "MOD/vox/plains_fountain_01.vox",
+   "cx": 0,
+   "cz": 0,
+   "sx": 9,
+   "sz": 9,
+   "x0": -4.5,
+   "x1": 4.5,
+   "z0": -4.5,
+   "z1": 4.5
+  },
+  {
+   "name": "houses/plains_small_house_1",
+   "file": "MOD/vox/plains_small_house_1.vox",
+   "cx": -13,
+   "cz": -11,
+   "sx": 7,
+   "sz": 7,
+   "x0": -16.5,
+   "x1": -9.5,
+   "z0": -14.5,
+   "z1": -7.5
+  },
+  {
+   "name": "houses/plains_small_house_2",
+   "file": "MOD/vox/plains_small_house_2.vox",
+   "cx": 13,
+   "cz": -11,
+   "sx": 7,
+   "sz": 7,
+   "x0": 9.5,
+   "x1": 16.5,
+   "z0": -14.5,
+   "z1": -7.5
+  },
+  {
+   "name": "houses/plains_small_house_3",
+   "file": "MOD/vox/plains_small_house_3.vox",
+   "cx": -13,
+   "cz": 11,
+   "sx": 7,
+   "sz": 7,
+   "x0": -16.5,
+   "x1": -9.5,
+   "z0": 7.5,
+   "z1": 14.5
+  },
+  {
+   "name": "houses/plains_medium_house_1",
+   "file": "MOD/vox/plains_medium_house_1.vox",
+   "cx": 15,
+   "cz": 13,
+   "sx": 13,
+   "sz": 11,
+   "x0": 8.5,
+   "x1": 21.5,
+   "z0": 7.5,
+   "z1": 18.5
+  },
+  {
+   "name": "houses/plains_small_farm_1",
+   "file": "MOD/vox/plains_small_farm_1.vox",
+   "cx": 0,
+   "cz": -17,
+   "sx": 7,
+   "sz": 9,
+   "x0": -3.5,
+   "x1": 3.5,
+   "z0": -21.5,
+   "z1": -12.5
+  },
+  {
+   "name": "houses/plains_animal_pen_1",
+   "file": "MOD/vox/plains_animal_pen_1.vox",
+   "cx": 0,
+   "cz": 16,
+   "sx": 5,
+   "sz": 6,
+   "x0": -2.5,
+   "x1": 2.5,
+   "z0": 13.0,
+   "z1": 19.0
+  },
+  {
+   "name": "plains_lamp_1",
+   "file": "MOD/vox/plains_lamp_1.vox",
+   "cx": -7,
+   "cz": -7,
+   "sx": 3,
+   "sz": 3,
+   "x0": -8.5,
+   "x1": -5.5,
+   "z0": -8.5,
+   "z1": -5.5
+  },
+  {
+   "name": "plains_lamp_1",
+   "file": "MOD/vox/plains_lamp_1.vox",
+   "cx": 7,
+   "cz": -7,
+   "sx": 3,
+   "sz": 3,
+   "x0": 5.5,
+   "x1": 8.5,
+   "z0": -8.5,
+   "z1": -5.5
+  },
+  {
+   "name": "plains_lamp_1",
+   "file": "MOD/vox/plains_lamp_1.vox",
+   "cx": -7,
+   "cz": 7,
+   "sx": 3,
+   "sz": 3,
+   "x0": -8.5,
+   "x1": -5.5,
+   "z0": 5.5,
+   "z1": 8.5
+  },
+  {
+   "name": "plains_lamp_1",
+   "file": "MOD/vox/plains_lamp_1.vox",
+   "cx": 7,
+   "cz": 7,
+   "sx": 3,
+   "sz": 3,
+   "x0": 5.5,
+   "x1": 8.5,
+   "z0": 5.5,
+   "z1": 8.5
+  }
+ ],
+ "tiles": [
+  {
+   "file": "MOD/vox/ground_000_000.vox",
+   "cx": -20.0,
+   "cz": -20.0,
+   "y": -3
+  },
+  {
+   "file": "MOD/vox/ground_000_020.vox",
+   "cx": -20.0,
+   "cz": 0.0,
+   "y": -3
+  },
+  {
+   "file": "MOD/vox/ground_000_040.vox",
+   "cx": -20.0,
+   "cz": 20.0,
+   "y": -3
+  },
+  {
+   "file": "MOD/vox/ground_020_000.vox",
+   "cx": 0.0,
+   "cz": -20.0,
+   "y": -3
+  },
+  {
+   "file": "MOD/vox/ground_020_020.vox",
+   "cx": 0.0,
+   "cz": 0.0,
+   "y": -3
+  },
+  {
+   "file": "MOD/vox/ground_020_040.vox",
+   "cx": 0.0,
+   "cz": 20.0,
+   "y": -3
+  },
+  {
+   "file": "MOD/vox/ground_040_000.vox",
+   "cx": 20.0,
+   "cz": -20.0,
+   "y": -3
+  },
+  {
+   "file": "MOD/vox/ground_040_020.vox",
+   "cx": 20.0,
+   "cz": 0.0,
+   "y": -3
+  },
+  {
+   "file": "MOD/vox/ground_040_040.vox",
+   "cx": 20.0,
+   "cz": 20.0,
+   "y": -3
+  }
+ ]
+}

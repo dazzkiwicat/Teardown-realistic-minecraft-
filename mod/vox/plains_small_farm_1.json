@@ -1,0 +1,23 @@
+{
+ "source": "/home/user/Teardown-realistic-minecraft-/source/minecraft/village/plains/houses/plains_small_farm_1.nbt",
+ "size_blocks": [
+  7,
+  6,
+  9
+ ],
+ "size_voxels_xyz_vox": [
+  70,
+  90,
+  60
+ ],
+ "blocks_placed": 84,
+ "voxels": 55391,
+ "bytes": 222834,
+ "materials": {
+  "9": "foliage",
+  "25": "dirt",
+  "26": "dirt",
+  "57": "wood"
+ },
+ "emissive_indices": []
+}

@@ -1,0 +1,26 @@
+{
+ "source": "/home/user/Teardown-realistic-minecraft-/source/minecraft/village/plains/town_centers/plains_fountain_01.nbt",
+ "size_blocks": [
+  9,
+  4,
+  9
+ ],
+ "size_voxels_xyz_vox": [
+  90,
+  90,
+  40
+ ],
+ "blocks_placed": 96,
+ "voxels": 86504,
+ "bytes": 347352,
+ "materials": {
+  "25": "dirt",
+  "57": "wood",
+  "73": "concrete",
+  "121": "metal",
+  "225": "unphysical"
+ },
+ "emissive_indices": [
+  225
+ ]
+}

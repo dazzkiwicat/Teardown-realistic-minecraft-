@@ -1,0 +1,24 @@
+{
+ "source": "/home/user/Teardown-realistic-minecraft-/source/minecraft/village/plains/houses/plains_animal_pen_1.nbt",
+ "size_blocks": [
+  5,
+  8,
+  6
+ ],
+ "size_voxels_xyz_vox": [
+  50,
+  60,
+  80
+ ],
+ "blocks_placed": 51,
+ "voxels": 33562,
+ "bytes": 135518,
+ "materials": {
+  "9": "foliage",
+  "10": "foliage",
+  "25": "dirt",
+  "26": "dirt",
+  "57": "wood"
+ },
+ "emissive_indices": []
+}

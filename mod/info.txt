@@ -1,0 +1,4 @@
+name = Minecraft Village Nights
+author = Darren and Jasper
+description = A Minecraft plains village built from the real village templates. Zombies come out at night and chew through wood, dirt and glass. Cobblestone holds. Survive until morning.
+tags = Map

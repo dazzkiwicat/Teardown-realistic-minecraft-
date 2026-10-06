@@ -1,0 +1,31 @@
+{
+ "source": "/home/user/Teardown-realistic-minecraft-/source/minecraft/village/plains/houses/plains_medium_house_1.nbt",
+ "size_blocks": [
+  13,
+  8,
+  11
+ ],
+ "size_voxels_xyz_vox": [
+  130,
+  110,
+  80
+ ],
+ "blocks_placed": 530,
+ "voxels": 475758,
+ "bytes": 1904368,
+ "materials": {
+  "1": "glass",
+  "25": "dirt",
+  "26": "dirt",
+  "57": "wood",
+  "58": "wood",
+  "59": "wood",
+  "60": "wood",
+  "73": "concrete",
+  "153": "plastic",
+  "225": "unphysical"
+ },
+ "emissive_indices": [
+  225
+ ]
+}
